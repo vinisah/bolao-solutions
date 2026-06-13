@@ -242,7 +242,7 @@ grant execute on function clear_all()                                        to 
 -- ===== SEED dos 3 jogos (datas do HTML, BRT = UTC-3; o admin ajusta/cria depois) =====
 insert into jogos(grupo, time_casa, time_fora, kickoff, ordem)
 select * from (values
-  ('Grupo C', 'Brasil',  'Marrocos', timestamptz '2026-06-14 19:00:00-03', 1),
+  ('Grupo C', 'Brasil',  'Marrocos', timestamptz '2026-06-13 19:00:00-03', 1),
   ('Grupo C', 'Brasil',  'Haiti',    timestamptz '2026-06-19 21:30:00-03', 2),
   ('Grupo C', 'Escócia', 'Brasil',   timestamptz '2026-06-24 19:00:00-03', 3)
 ) as seed(grupo, time_casa, time_fora, kickoff, ordem)
