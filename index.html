@@ -379,11 +379,13 @@ function render(){
 /* ===== boot ===== */
 reload();
 sb.auth.getSession().then(({ data }) => {
-  refreshAuth(data.session);
+  setTimeout(() => refreshAuth(data.session), 0);
   if(location.search.includes('code=') || location.hash.includes('access_token'))
     history.replaceState({}, '', location.pathname);
 });
-sb.auth.onAuthStateChange((_e, session) => refreshAuth(session));
+// IMPORTANTE: deferir p/ FORA do callback do onAuthStateChange — chamar sb.from()
+// dentro dele re-adquire o lock do GoTrue e trava (deadlock re-entrante).
+sb.auth.onAuthStateChange((_e, session) => { setTimeout(() => refreshAuth(session), 0); });
 </script>
 </body>
 </html>
