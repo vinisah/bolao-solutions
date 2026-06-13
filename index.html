@@ -80,6 +80,8 @@
     .adminbar{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
     .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#06240d;border:1px solid var(--yellow);color:#fff;padding:12px 18px;border-radius:12px;z-index:9999;display:none;max-width:90vw;text-align:center}
     label{display:block;margin-bottom:4px;font-size:13px;color:var(--muted)}
+    .avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid var(--yellow);vertical-align:middle}
+    body:not(.is-logged) #btnSalvarPalpite{opacity:.5;pointer-events:none}
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -96,17 +98,13 @@
   </header>
 
   <main class="wrap">
-    <div class="adminbar">
+    <div class="adminbar" id="userbar">
+      <span class="small" id="authMsg">Entre com Google para palpitar</span>
+      <button id="btnGoogle" onclick="loginGoogle()" style="padding:8px 14px">Entrar com Google</button>
+      <img id="userAvatar" class="avatar" style="display:none" alt="">
+      <span id="userName" class="small" style="display:none"></span>
       <span id="adminStatus" class="small"></span>
-      <button class="secondary" onclick="toggleAdminBox()" style="padding:8px 12px">Admin</button>
-    </div>
-    <div id="adminLoginBox" class="card" style="display:none;max-width:380px;margin:0 0 18px auto">
-      <div><label>E-mail do organizador</label><input id="admEmail" type="email" placeholder="organizador@empresa.com"></div>
-      <div style="margin-top:8px"><label>Senha</label><input id="admPass" type="password"></div>
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <button onclick="adminLogin()">Entrar</button>
-        <button class="secondary admin-only" onclick="adminLogout()">Sair</button>
-      </div>
+      <button id="btnLogout" class="secondary" style="display:none;padding:8px 12px" onclick="logout()">Sair</button>
     </div>
 
     <section class="section">
@@ -135,14 +133,13 @@
 
     <section class="section card">
       <h2>Lançar palpite</h2>
-      <div class="form-grid" style="grid-template-columns:1.6fr 1fr 1.4fr .8fr auto">
-        <div><label>Participante</label><input id="nome" placeholder="Seu nome" oninput="lembrarPin()"></div>
-        <div><label>PIN (mín. 6)</label><input id="pin" type="password" placeholder="Sua senha"></div>
+      <div class="form-grid" style="grid-template-columns:1.4fr .8fr auto">
         <div><label>Jogo</label><select id="jogo"></select></div>
         <div><label>Palpite</label><input id="palpite" placeholder="Ex.: 2 x 1"></div>
-        <button onclick="addPalpite()">Salvar</button>
+        <button id="btnSalvarPalpite" onclick="addPalpite()">Salvar</button>
       </div>
-      <div class="small" id="palpiteHint">Use o mesmo nome + PIN sempre que voltar para editar seus palpites (só antes do jogo começar).</div>
+      <div class="small" id="palpiteHint">Você pode editar seu placar até 1 minuto antes do jogo começar.</div>
+      <div class="small" id="loginGate" style="display:none"><a href="#" onclick="loginGoogle();return false">Entre com Google</a> para enviar palpites.</div>
       <table id="tabelaPalpites"><thead><tr><th>Participante</th><th>Jogo</th><th>Palpite</th><th class="admin-only">Ação</th></tr></thead><tbody></tbody></table>
     </section>
 
@@ -177,10 +174,14 @@
   <div class="toast" id="toast"></div>
 
 <script>
-/* ===== CONFIG — preencha com os dados do seu projeto Supabase ===== */
+/* ===== CONFIG ===== */
 const SUPABASE_URL = 'https://qowtuqqtdvsgphseqkrg.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_b7aHAK5C560PPFM4d92PXQ__Zh9iA0K';
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const REDIRECT_URL = 'https://vinisah.github.io/bolao-solutions/';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' }
+});
+let currentUser = null, isAdminUser = false;
 
 /* ===== estado ===== */
 let jogos = [], palpites = [], rankingRows = [], resultados = {};
@@ -207,49 +208,63 @@ async function reload(){
 }
 let _t; const reloadDebounced = () => { clearTimeout(_t); _t = setTimeout(reload, 250); };
 
-/* ===== participante ===== */
-function lembrarPin(){
-  const nome = document.getElementById('nome').value.trim().toLowerCase();
-  const saved = nome ? localStorage.getItem('pin:' + nome) : '';
-  if(saved) document.getElementById('pin').value = saved;
+/* ===== auth (login Google) ===== */
+async function loginGoogle(){
+  const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: REDIRECT_URL } });
+  if(error) toast(error.message);
 }
+async function logout(){ await sb.auth.signOut(); }
+
+async function refreshAuth(session){
+  currentUser = session?.user ?? null;
+  isAdminUser = false;
+  if(currentUser){
+    const meta = currentUser.user_metadata || {};
+    const dn = (meta.full_name || meta.name || (currentUser.email || '').split('@')[0] || 'Participante').slice(0, 40);
+    // garante o perfil (nome do Google) mesmo se o trigger do banco não rodar
+    await sb.from('profiles').upsert({ user_id: currentUser.id, display_name: dn, email: currentUser.email }, { onConflict: 'user_id' });
+    const { data } = await sb.from('admins').select('user_id').eq('user_id', currentUser.id).maybeSingle();
+    isAdminUser = !!data;
+  }
+  setAuthUI(); render();
+}
+function setAuthUI(){
+  const on = !!currentUser, meta = currentUser?.user_metadata || {};
+  const name = meta.full_name || meta.name || currentUser?.email || '';
+  const avatar = meta.avatar_url || meta.picture || '';
+  document.body.classList.toggle('is-admin', isAdminUser);
+  document.body.classList.toggle('is-logged', on);
+  document.getElementById('btnGoogle').style.display = on ? 'none' : '';
+  document.getElementById('authMsg').style.display   = on ? 'none' : '';
+  document.getElementById('btnLogout').style.display = on ? '' : 'none';
+  const un = document.getElementById('userName'); un.style.display = on ? '' : 'none'; un.textContent = name;
+  const av = document.getElementById('userAvatar'); if(avatar) av.src = avatar; av.style.display = (on && avatar) ? '' : 'none';
+  document.getElementById('adminStatus').textContent = isAdminUser ? '• Organizador' : '';
+  const gate = document.getElementById('loginGate'), hint = document.getElementById('palpiteHint');
+  if(gate) gate.style.display = on ? 'none' : 'block';
+  if(hint) hint.style.display = on ? 'block' : 'none';
+}
+
+/* ===== lançar palpite (amarrado à conta Google logada) ===== */
 async function addPalpite(){
-  const nome = document.getElementById('nome').value.trim();
-  const pin  = document.getElementById('pin').value;
-  const sc   = parsePlacar(document.getElementById('palpite').value.trim());
-  const g    = jogos.find(x => x.id === document.getElementById('jogo').value);
-  if(!nome || !sc) return alert('Informe nome e palpite no formato 2 x 1.');
-  if(pin.length < 6) return alert('Defina um PIN de pelo menos 6 caracteres.');
-  if(!g) return alert('Selecione um jogo.');
+  if(!currentUser){ toast('Entre com Google para palpitar.'); return loginGoogle(); }
+  const sc = parsePlacar(document.getElementById('palpite').value.trim());
+  const g  = jogos.find(x => x.id === document.getElementById('jogo').value);
+  if(!sc) return alert('Informe o palpite no formato 2 x 1.');
+  if(!g)  return alert('Selecione um jogo.');
   if(!isOpen(g)) return toast('Apostas encerradas para este jogo.');
-  const { error } = await sb.rpc('submit_palpite', { p_nome: nome, p_secret: pin, p_jogo_id: g.id, p_casa: sc[0], p_fora: sc[1] });
+  // user_id é preenchido pelo banco (default auth.uid()); upsert = 1 palpite por jogo
+  const { error } = await sb.from('palpites').upsert(
+    { jogo_id: g.id, placar_casa: sc[0], placar_fora: sc[1] },
+    { onConflict: 'user_id,jogo_id' }
+  );
   if(error){
-    toast(/encerradas/.test(error.message) ? 'Tempo esgotado: as apostas para este jogo já fecharam.' : error.message);
+    toast(/encerrad|apostas|deadline|policy|row-level/i.test(error.message) ? 'Tempo esgotado: as apostas para este jogo já fecharam.' : error.message);
     reload(); return;
   }
-  localStorage.setItem('pin:' + nome.toLowerCase(), pin);   // PIN lembrado neste aparelho
   document.getElementById('palpite').value = '';
   toast('Palpite salvo!'); reload();
 }
-
-/* ===== admin (Supabase Auth) ===== */
-function toggleAdminBox(){
-  const b = document.getElementById('adminLoginBox');
-  b.style.display = (b.style.display === 'none' || !b.style.display) ? 'block' : 'none';
-}
-function setAdminUI(on){
-  document.body.classList.toggle('is-admin', on);
-  document.getElementById('adminStatus').textContent = on ? 'Modo organizador ativo' : '';
-}
-async function adminLogin(){
-  const { error } = await sb.auth.signInWithPassword({
-    email: document.getElementById('admEmail').value.trim(),
-    password: document.getElementById('admPass').value });
-  if(error) return toast('Login inválido.');
-  setAdminUI(true); document.getElementById('admPass').value = ''; toast('Bem-vindo, organizador!');
-}
-async function adminLogout(){ await sb.auth.signOut(); setAdminUI(false); }
-sb.auth.getSession().then(({ data }) => setAdminUI(!!data.session));
 
 async function salvarResultado(){
   const sc = parsePlacar(document.getElementById('resultado').value.trim());
@@ -312,6 +327,7 @@ sb.channel('bolao')
   .on('postgres_changes', { event: '*', schema: 'public', table: 'palpites'   }, reloadDebounced)
   .on('postgres_changes', { event: '*', schema: 'public', table: 'resultados' }, reloadDebounced)
   .on('postgres_changes', { event: '*', schema: 'public', table: 'jogos'      }, reloadDebounced)
+  .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles'   }, reloadDebounced)
   .subscribe();
 setInterval(reload, 15000);
 
@@ -360,7 +376,14 @@ function render(){
   tick();
 }
 
+/* ===== boot ===== */
 reload();
+sb.auth.getSession().then(({ data }) => {
+  refreshAuth(data.session);
+  if(location.search.includes('code=') || location.hash.includes('access_token'))
+    history.replaceState({}, '', location.pathname);
+});
+sb.auth.onAuthStateChange((_e, session) => refreshAuth(session));
 </script>
 </body>
 </html>
